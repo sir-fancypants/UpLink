@@ -1,21 +1,78 @@
 "use strict"
 
-// UpLink v2.0.1
+const VERSION = "3.0.0";
 
 /**
- * @class Utility
- * @description Internal helper class. Not part of the public API.
+ * Prints a styled console signature/banner for UpLink when running in a browser environment.
+ * Groups package metadata (version, description, author, license, repo) under a collapsed
+ * console group. No-ops in non-browser (Node/SSR) environments.
+ *
+ * @private
+ * @returns {void}
+ */
+function printSignature() {
+    if (typeof window !== "undefined") {
+        const pkg = {
+            name: "UpLink",
+            description: "A lightweight, event-driven network quality monitor that goes beyond navigator.onLine.",
+            author: "Raymond Ngule",
+            license: "MIT",
+            version: VERSION,
+            repo: "https://github.com/sir-fancypants/UpLink",
+        };
+
+        const c = {
+            group: `color: #2898e2; font-weight: bold; font-family: monospace;`,
+            banner: "color: #2898e2; font-family: monospace; font-size: 12px; line-height: 1.1; font-weight: bold;",
+            dot: "color: #a03131; font-weight: bold;",
+            key: "color: #20b9d4; font-family: monospace; font-size: 15px;",
+            val: "font-family: monospace; font-size: 13px;",
+            dim: "color: #20b9d4; font-family: monospace; font-size: 14px;",
+            badge: "background: #2385c6; color: #ffffff; border: 2px solid #cccccc; border-radius: 5px; padding: 5px 6px; font-size: 14px; font-family: monospace; font-weight: bold;",
+        };
+
+        const bannerArt = [
+            " ██╗   ██╗██████╗ ██╗     ██╗███╗   ██╗██╗  ██╗",
+            " ██║   ██║██╔══██╗██║     ██║████╗  ██║██║ ██╔╝",
+            " ██║   ██║██████╔╝██║     ██║██╔██╗ ██║█████╔╝ ",
+            " ██║   ██║██╔═══╝ ██║     ██║██║╚██╗██║██╔═██╗ ",
+            " ╚██████╔╝██║     ███████╗██║██║ ╚████║██║  ██╗",
+            "  ╚═════╝ ╚═╝     ╚══════╝╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝",
+        ].join("\n");
+
+        const rows = [
+            ["version", pkg.version],
+            ["description", pkg.description],
+            ["author", pkg.author],
+            ["license", pkg.license],
+            ["repository", pkg.repo],
+        ];
+
+        console.groupCollapsed(`%c ● SYSTEM READY %c v${pkg.version} %c© 2026 ${pkg.author}`, c.badge, c.dim, c.dim);
+
+        console.log(`%c${bannerArt}`, c.banner);
+
+        rows.forEach(([key, val]) => {
+            const k = `◆ ${key}`.padEnd(16);
+            console.log(`%c${k.slice(0, 1)}%c${k.slice(1)}%c${val}`, c.dot, c.key, c.val);
+        });
+
+        console.groupEnd();
+    }
+}
+
+/**
+ * Internal utility helpers.
+ *
  * @private
  */
 class Utility {
-
     /**
-     * Checks whether a value is a plain object (i.e. `{}`).
-     * Returns `false` for arrays, class instances, `null`, and other non-plain objects.
-     * Used internally to validate config options.
-     * @param {*} value
+     * Returns `true` if `value` is a plain object (i.e. created via `{}` or `new Object()`).
+     * Rejects arrays, class instances, `null`, and primitives.
+     *
+     * @param {*} value - The value to test.
      * @returns {boolean}
-     * @private
      */
     static isPlainObject(value) {
         return Object.prototype.toString.call(value) === '[object Object]';
@@ -23,18 +80,18 @@ class Utility {
 }
 
 /**
- * @class UpLinkError
+ * Custom error class used by UpLink for all thrown errors.
+ * Extends the native `Error` with a machine-readable `code` property.
+ *
  * @extends Error
- * @description Custom error class for UpLink. Includes a `code` property for
- * programmatic error handling so you can distinguish error types without
- * parsing the message string.
  *
  * @example
  * try {
- *   UpLink.config({ pollingIntervals: { unstable: 100 } });
- * } catch (e) {
- *   if (e.code === "CONFIG_ERR") {
- *     console.log("Bad config value:", e.message);
+ *   UpLink.config({ endPoints: "bad value" });
+ * } catch (err) {
+ *   if (err instanceof UpLinkError) {
+ *     console.error(err.code, err.message);
+ *     // → "CONFIG_ERR" "'endpoints' option is expected to be a plain object"
  *   }
  * }
  */
@@ -43,10 +100,13 @@ class UpLinkError extends Error {
     /**
      * @param {string} message - Human-readable error description.
      * @param {string} [code="GENERAL_ERROR"] - Machine-readable error code.
+     *   Known codes: `"GENERAL_ERROR"`, `"ALREADY_CONFIGURED"`, `"CONFIG_ERR"`, `"DEBUG_ERR"`.
      */
     constructor(message, code = "GENERAL_ERROR") {
         super(message);
+        /** @type {string} The name of this error class. Always `"UpLinkError"`. */
         this.name = "UpLinkError";
+        /** @type {string} Machine-readable code identifying the error category. */
         this.code = code;
 
         if (Error.captureStackTrace) {
@@ -56,83 +116,97 @@ class UpLinkError extends Error {
 }
 
 /**
- * @class Monitor
+ * @typedef {Object} NetworkCondition
+ * @property {string} label   - Verbose human-readable label (e.g. `"High Latency"`).
+ * @property {string} alias   - Short human-readable label (e.g. `"Slow"`).
+ * @property {string} code    - Machine-readable status code. One of:
+ *   `"NET_EXCELLENT"` | `"NET_GOOD"` | `"NET_SLOW"` | `"NET_BAD"` | `"NET_CRITICAL"` | `"NET_OFFLINE"` | `"NET_PENDING"`.
+ */
+
+/**
+ * @typedef {Object} EndPointState
+ * @property {string} endPoint - The URL currently being polled.
+ * @property {"main"|"backup"} type - Whether the active endpoint is the main or backup.
+ */
+
+/**
+ * @typedef {Object} DebugState
+ * @property {boolean}          online         - Current online status.
+ * @property {number}           bars           - Signal bar count (0–5).
+ * @property {NetworkCondition} condition      - Current network condition object.
+ * @property {number[]}         latencyLog     - Rolling window of the last ≤10 raw latency samples (ms). Failed pings are stored as `Infinity`.
+ * @property {number}           latency        - Current average latency (ms), or `Infinity` when all samples failed.
+ * @property {number}           jitter         - Current average jitter (ms).
+ * @property {number}           packetLoss     - Estimated packet loss percentage (0–100).
+ * @property {EndPointState}    endpoint       - Currently active endpoint info.
+ * @property {number}           interval       - Active polling interval in ms.
+ * @property {number}           failures       - Consecutive failed ping count.
+ */
+
+/**
+ * @typedef {Object} PingEventDetail
+ * @property {boolean}          online      - Whether the connection is considered online.
+ * @property {number}           latency     - Average latency across the current log window (ms), or `Infinity`.
+ * @property {NetworkCondition} condition   - Current network condition.
+ * @property {number}           bars        - Signal strength bar count (0–5).
+ * @property {number}           jitter      - Average jitter (ms).
+ * @property {number}           packetLoss  - Estimated packet loss percentage (0–100).
+ */
+
+/**
+ * @typedef {Object} DebugPingEventDetail
+ * @property {"main"|"backup"} endpoint  - Which endpoint was polled.
+ * @property {number}          duration  - Round-trip time for this specific ping in ms.
+ * @property {DebugState}      snapshot  - Full debug state snapshot at the time of the ping.
+ */
+
+/**
+ * Core network quality monitor. Extends `EventTarget` so consumers can subscribe to
+ * real-time events using `on`/`off` (aliases for `addEventListener`/`removeEventListener`).
+ *
+ * UpLink polls a remote endpoint on a dynamic interval, derives latency, jitter, and
+ * packet-loss metrics from a rolling 10-sample window, and maps those to a discrete
+ * {@link NetworkCondition}. Polling automatically pauses when the browser tab is hidden
+ * and resumes when it becomes visible again.
+ *
+ * The module exports a **singleton** instance. Do not call `new Monitor()` directly.
+ *
+ * ---
+ *
+ * ### Events
+ *
+ * | Event name              | `event.detail` type          | When it fires                                                     |
+ * |-------------------------|------------------------------|-------------------------------------------------------------------|
+ * | `"online"`              | —                            | UpLink transitions from offline → online.                         |
+ * | `"offline"`             | —                            | UpLink transitions from online → offline.                         |
+ * | `"ping"`                | {@link PingEventDetail}      | After every completed or failed poll cycle.                       |
+ * | `"networkConditionChange"` | {@link PingEventDetail}   | When the derived {@link NetworkCondition} label changes.          |
+ * | `"debug:ping"`          | {@link DebugPingEventDetail} | After every poll cycle **only** when the debug stream is enabled. |
+ *
  * @extends EventTarget
- * @description Core monitoring class for UpLink. Actively polls a remote
- * endpoint on a timer to verify real internet connectivity. More reliable
- * than `navigator.onLine` or the native `online`/`offline` window events,
- * which only detect whether a network interface is available — not whether
- * the internet is actually reachable.
  *
- * As of v2.0.1, UpLink also listens to the native `online` and `offline`
- * window events as early-warning signals. When they fire, UpLink immediately
- * restarts its polling loop to run a confirmation ping ahead of the next
- * scheduled cycle. A 2-second debounce buffer on each event prevents
- * flickering connections from triggering repeated restarts.
+ * @example <caption>Basic usage</caption>
+ * import UpLink from './uplink.js';
  *
- * On construction, polling starts immediately with default settings.
+ * UpLink.on('networkConditionChange', ({ detail }) => {
+ *   console.log(detail.condition.label, detail.bars);
+ * });
  *
- * ---
- *
- * **Important — call `config()` first and only once:**
- * `config()` must be called before your app begins reacting to network events.
- * It stops polling, applies your settings, then restarts cleanly. Calling it
- * after listeners are already attached means the first few pings may use
- * default settings. `config()` can only be called once — calling it a second
- * time throws an `UpLinkError` with code `ALREADY_CONFIGURED`.
- *
- * ```js
- * // ✅ Correct
- * UpLink.config({ pollingIntervals: { stable: 8000 } });
- * UpLink.addEventListener("ping", handler);
- *
- * // ❌ Will throw ALREADY_CONFIGURED
- * UpLink.config({ pollingIntervals: { stable: 8000 } });
- * UpLink.config({ latencyThresholds: { optimal: 50 } });
- * ```
- *
- * ---
- *
- * **Dual endpoint fallback:**
- * UpLink polls a `main` endpoint by default (Google DNS). If that endpoint
- * times out, it silently switches to a `backup` endpoint (Cloudflare) and
- * begins checking every 5 minutes whether the main endpoint has recovered.
- * When it does, polling switches back automatically.
- *
- * ---
- *
- * **Tab visibility:**
- * Polling automatically pauses when the browser tab is hidden and resumes
- * when the tab becomes visible again, avoiding unnecessary background requests.
- *
- * ---
- *
- * **Listener lifetime:**
- * The `visibilitychange`, `offline`, and `online` listeners all share the
- * same `AbortController` signal. When `stopPollingNetwork()` is called — whether
- * manually or triggered by a native event — all three listeners are removed
- * automatically. `startPollingNetwork()` then creates a fresh controller and
- * re-attaches them.
- *
- * @fires Monitor#ping
- * @fires Monitor#online
- * @fires Monitor#offline
+ * @example <caption>Custom configuration</caption>
+ * UpLink.config({
+ *   endPoints: { main: 'https://my-healthcheck.example.com/ping' },
+ *   latencyThresholds: { optimal: 80, stable: 200, highLatency: 400, degraded: 600 },
+ *   pollingIntervals: { unstable: 1500, stabilising: 3000, stable: 5000 },
+ * });
  */
 class Monitor extends EventTarget {
 
-    /**
-     * Rolling window of the last 10 latency readings in ms.
-     * `Infinity` represents a failed ping. Replaced with the `degraded`
-     * threshold value on recovery to avoid permanently skewing averages.
-     * @type {number[]}
-     * @private
-     */
+    /** @type {number[]} Rolling window of the last ≤10 latency samples in ms. Failed pings are `Infinity`. @private */
     #latencyLog = [];
 
     /**
-     * Named network condition state objects used by `#networkConditionCheck`.
-     * Each state has a `label`, `alias`, and `code`.
-     * @type {Object}
+     * Lookup map of all possible network condition descriptor objects.
+     * @type {Object.<string, NetworkCondition>}
      * @private
      */
     #networkConditionStates = {
@@ -174,9 +248,8 @@ class Monitor extends EventTarget {
     };
 
     /**
-     * The endpoints used for polling. `main` is tried first; `backup` is
-     * used if `main` times out. Both must support `no-cors` fetch mode.
-     * Configurable via `config()`.
+     * Default poll endpoints. `main` is tried first; `backup` is used on timeout.
+     * Override via {@link Monitor#config}.
      * @type {{ main: string, backup: string }}
      * @private
      */
@@ -186,8 +259,8 @@ class Monitor extends EventTarget {
     };
 
     /**
-     * Tracks which endpoint is currently active and its type.
-     * @type {{ endPoint: string, type: "main"|"backup" }}
+     * Tracks the URL and type ("main" | "backup") of the endpoint currently being polled.
+     * @type {EndPointState}
      * @private
      */
     #currentEndPoint = {
@@ -196,9 +269,10 @@ class Monitor extends EventTarget {
     };
 
     /**
-     * Polling interval durations in ms, indexed by stability phase.
-     * Backs off as the connection stabilises to reduce unnecessary requests.
-     * Configurable via `config()`. Minimum allowed value: 500ms.
+     * Adaptive polling interval durations in milliseconds.
+     * UpLink starts at `unstable`, steps up to `stabilising` after 10 consecutive
+     * identical condition readings, and to `stable` after 20.
+     * Override via {@link Monitor#config}.
      * @type {{ unstable: number, stabilising: number, stable: number }}
      * @private
      */
@@ -208,26 +282,20 @@ class Monitor extends EventTarget {
         stable: 6000,
     };
 
-    /**
-     * The currently active polling interval in ms. Starts at `unstable`
-     * and increases as the connection proves consistent.
-     * @type {number}
-     * @private
-     */
+    /** @type {number} Active polling interval in ms. Starts at `unstable`. @private */
     #currentpollingInterval = 2000;
 
     /**
-     * Average latency thresholds in ms used to classify the connection.
-     * Configurable via `config()`. Must be set in strictly ascending order.
+     * Latency boundaries (ms) used to classify the current {@link NetworkCondition}.
+     * Override via {@link Monitor#config}.
      *
-     * | Key           | Default | Meaning                            |
-     * |---------------|---------|------------------------------------|
-     * | `optimal`     | 100ms   | Below this → Optimal  (5 bars)     |
-     * | `stable`      | 250ms   | Below this → Stable   (4 bars)     |
-     * | `highLatency` | 500ms   | Below this → High Latency (3 bars) |
-     * | `degraded`    | 700ms   | Below this → Degraded (2 bars)     |
-     * | Above degraded|         | Critical (1 bar)                   |
-     * | Infinity      |         | Disconnected (0 bars)              |
+     * | Condition    | Latency range          |
+     * |--------------|------------------------|
+     * | optimal      | < 100 ms               |
+     * | stable       | 100 ms – 250 ms        |
+     * | highLatency  | 250 ms – 500 ms        |
+     * | degraded     | 500 ms – 700 ms        |
+     * | critical     | ≥ 700 ms               |
      *
      * @type {{ optimal: number, stable: number, highLatency: number, degraded: number }}
      * @private
@@ -239,224 +307,422 @@ class Monitor extends EventTarget {
         degraded: 700,
     };
 
-    /** @type {number|false} Timeout ID for the main endpoint pulse check. `false` when inactive. @private */
+    /** @type {ReturnType<typeof setTimeout>|false} Timeout ID for the main-endpoint pulse check. @private */
     #checkMainEndPointTimeOutId = false;
 
-    /** @type {AbortController} Used to cancel the active fetch request. @private */
+    /** @type {AbortController} AbortController used to cancel in-flight fetch requests. @private */
     #fetchAbortController;
 
-    /**
-     * Whether the polling loop is currently running.
-     * Initialised as `false` so `startPollingNetwork()` can safely run on
-     * construction without the guard blocking it.
-     * @type {boolean}
-     * @private
-     */
+    /** @type {boolean} Whether the polling loop is currently active. @private */
     #pollingNetwork = false;
 
-    /** @type {boolean} Whether polling was paused due to tab visibility. Used to auto-resume. @private */
+    /** @type {boolean} Set to `true` when polling was paused by the `visibilitychange` listener. @private */
     #pollingPausedByVisibilityListener = false;
 
-    /** @type {boolean} Whether `config()` has already been called. Prevents re-configuration. @private */
+    /** @type {boolean} Guards against calling `config()` more than once. @private */
     #configured = false;
 
-    /** @type {number} Timeout ID for the polling loop interval. @private */
+    /** @type {ReturnType<typeof setTimeout>} Timeout ID for the next polling cycle. @private */
     #pollingTimeOutId;
 
-    /** @type {string|undefined} The condition label from the last stability check. @private */
+    /** @type {string|undefined} The last recorded condition label used to detect condition changes. @private */
     #stabilityLatencyLogLastEntry;
 
-    /** @type {string[]} Rolling log of recent condition labels used to detect stability. @private */
+    /** @type {string[]} Rolling log of condition labels used to drive the adaptive polling interval. @private */
     #stabilityLatencyLog = [];
 
-    /** @type {boolean} When `true`, suppresses low-threshold console warnings from `config()`. @private */
+    /** @type {boolean} Whether to suppress non-critical `console.warn` messages from `config()`. @private */
     #silenceWarnings = false;
 
-    /**
-     * Signal bars representing connection strength. 0 = offline, 5 = optimal.
-     * @type {number}
-     * @private
-     */
+    /** @type {number} Current signal strength (0 = offline, 1–5 = poor → excellent). @private */
     #bars = 0;
 
-    /**
-     * The current network condition object. Starts as `syncing` until the
-     * first ping completes.
-     * @type {{ label: string, alias: string, code: string }}
-     * @private
-     */
+    /** @type {NetworkCondition} Currently derived network condition descriptor. @private */
     #networkCondition = {
         label: "Syncing",
         alias: "Calculating",
         code: "NET_PENDING",
     };
 
-    /** @type {boolean} Current online status. Initialised from `navigator.onLine`. @private */
+    /** @type {boolean} Online status mirroring `navigator.onLine`, updated by polling results. @private */
     #online = navigator.onLine;
 
-    /** @type {AbortController} Controls the lifetime of the visibilitychange, offline, and online listeners. @private */
+    /** @type {AbortController|null} Long-lived AbortController for `visibilitychange`, `online`, and `offline` window events. @private */
     #mainAbortController;
 
-    /** @type {number} Timeout ID for the per-request force-abort timer. @private */
+    /** @type {ReturnType<typeof setTimeout>} Timeout ID that forces a fetch abort after 3500ms. @private */
     #forceTimeOutOnNetworkRequest;
 
-    /**
-     * Debounce flag for the native `offline` window event.
-     * When `true`, further `offline` events are ignored for 2 seconds.
-     * Prevents flickering connections from triggering repeated restarts.
-     * @type {boolean}
-     * @private
-     */
+    /** @type {boolean} Buffer flag that debounces the native `offline` window event. @private */
     #nativeEventBufferOffline = false;
 
-    /**
-     * Debounce flag for the native `online` window event.
-     * When `true`, further `online` events are ignored for 2 seconds.
-     * Kept separate from the offline buffer so a genuine rapid
-     * offline → online transition is never masked.
-     * @type {boolean}
-     * @private
-     */
+    /** @type {boolean} Buffer flag that debounces the native `online` window event. @private */
     #nativeEventBufferOnline = false;
+
+    /** @type {number} Number of consecutive failed ping attempts since the last success. @private */
+    #consecutiveFailures = 0;
+
+    /** @type {boolean} When `true`, a `"debug:ping"` CustomEvent is dispatched after every poll cycle. @private */
+    #debugStreamEnabled = false;
 
     constructor() {
         super();
+
+        /**
+         * Alias for `addEventListener`. Attach a listener to an UpLink event.
+         *
+         * @type {typeof EventTarget.prototype.addEventListener}
+         *
+         * @example
+         * UpLink.on('ping', ({ detail }) => console.log(detail.latency));
+         */
+        this.on = this.addEventListener.bind(this);
+
+        /**
+         * Alias for `removeEventListener`. Remove a previously attached listener.
+         *
+         * @type {typeof EventTarget.prototype.removeEventListener}
+         *
+         * @example
+         * const handler = ({ detail }) => console.log(detail.latency);
+         * UpLink.on('ping', handler);
+         * UpLink.off('ping', handler);
+         */
+        this.off = this.removeEventListener.bind(this);
+
+        /**
+         * Collection of debugging utilities. Intended for development use only.
+         * All methods are read-only (the object is frozen).
+         *
+         * @namespace debug
+         * @memberof Monitor
+         */
+        this.debug = Object.freeze({
+
+            /**
+             * Prints the UpLink console signature/banner and returns the current version string.
+             *
+             * @memberof Monitor#debug
+             * @returns {string} The current UpLink version (e.g. `"3.0.0"`).
+             *
+             * @example
+             * const v = UpLink.debug.version(); // → "3.0.0"
+             */
+            version: () => {
+                printSignature();
+                return VERSION;
+            },
+
+            /**
+             * Returns a shallow copy of the internal latency log array.
+             * Contains the last ≤10 raw latency samples in ms, newest first.
+             * Failed pings are represented as `Infinity`.
+             *
+             * @memberof Monitor#debug
+             * @returns {number[]}
+             *
+             * @example
+             * UpLink.debug.logs(); // → [45, 67, Infinity, 102, ...]
+             */
+            logs: () => this.#latencyLog.slice(),
+
+            /**
+             * Returns a snapshot of the full internal state at the time of the call.
+             *
+             * @memberof Monitor#debug
+             * @returns {DebugState}
+             *
+             * @example
+             * const state = UpLink.debug.state();
+             * console.log(state.bars, state.condition.code);
+             */
+            state: () => ({
+                online: this.#online,
+                bars: this.#bars,
+                condition: { ...this.#networkCondition },
+                latencyLog: [...this.#latencyLog],
+                latency: this.latency,
+                jitter: this.jitter,
+                packetLoss: this.packetLoss,
+                endpoint: { ...this.#currentEndPoint },
+                interval: this.#currentpollingInterval,
+                failures: this.#consecutiveFailures
+            }),
+
+            /**
+             * Returns the configured endpoint URLs and which is currently active.
+             *
+             * @memberof Monitor#debug
+             * @returns {{ main: string, backup: string, current: EndPointState }}
+             *
+             * @example
+             * UpLink.debug.endpoints();
+             * // → { main: "https://...", backup: "https://...", current: { endPoint: "...", type: "main" } }
+             */
+            endpoints: () => ({
+                main: this.#endPoints.main,
+                backup: this.#endPoints.backup,
+                current: this.#currentEndPoint
+            }),
+
+            /**
+             * Resets all internal metrics (latency log, stability log, condition, bars, failures)
+             * back to their initial values without stopping the polling loop.
+             * Useful for getting a clean slate during manual testing.
+             *
+             * @memberof Monitor#debug
+             * @returns {void}
+             *
+             * @example
+             * UpLink.debug.reset();
+             */
+            reset: () => this.#debugReset(),
+
+            /**
+             * Injects mock latency values directly into the latency log and immediately
+             * re-evaluates the network condition. Use this to simulate poor network conditions
+             * without needing actual network degradation.
+             *
+             * @memberof Monitor#debug
+             * @param {number[]} mockLatency - Array of latency values in ms to inject (newest first).
+             *   Use `Infinity` to simulate failed pings.
+             * @throws {UpLinkError} Throws with code `"DEBUG_ERR"` if the argument is not an array of numbers.
+             *
+             * @example
+             * // Simulate three high-latency samples
+             * UpLink.debug.spike([800, 900, 750]);
+             *
+             * @example
+             * // Simulate packet loss (failed pings)
+             * UpLink.debug.spike([Infinity, Infinity, Infinity]);
+             */
+            spike: (mockLatency) => this.#injectLatency(mockLatency),
+
+            /**
+             * Enables or disables the `"debug:ping"` event stream.
+             * When enabled, a {@link DebugPingEventDetail} `CustomEvent` is dispatched
+             * on every poll cycle, regardless of whether the ping succeeded or failed.
+             *
+             * @memberof Monitor#debug
+             * @param {boolean} [val=true] - Pass `true` to enable, `false` to disable.
+             * @returns {void}
+             *
+             * @example
+             * UpLink.debug.stream(true);
+             * UpLink.on('debug:ping', ({ detail }) => {
+             *   console.log(detail.endpoint, detail.duration, detail.snapshot);
+             * });
+             */
+            stream: (val = true) => {
+                this.#debugStreamEnabled = !!val;
+            }
+
+        });
+
         this.startPollingNetwork();
-    }
+    };
 
     /**
-     * Starts the polling loop and attaches the tab visibility, `offline`,
-     * and `online` listeners. All three listeners share a single
-     * `AbortController` signal and are automatically removed when
-     * `stopPollingNetwork()` is called.
+     * Starts the polling loop if it is not already running.
      *
-     * If polling is already running (`#pollingNetwork === true`), this method
-     * returns immediately — preventing duplicate polling loops.
+     * If the browser tab is currently hidden when this is called, polling will be deferred
+     * until the tab becomes visible. Also attaches (once) the `visibilitychange`, `online`,
+     * and `offline` window event listeners that automatically pause/resume polling.
      *
-     * Called automatically on construction and after `config()` completes.
-     * Safe to call manually to resume polling after `stopPollingNetwork()`.
+     * This method is called automatically by the constructor and after `config()`.
+     * You only need to call it manually if you previously called `stopPollingNetwork()`.
      *
      * @returns {void}
+     *
+     * @example
+     * UpLink.stopPollingNetwork();
+     * // ... later ...
+     * UpLink.startPollingNetwork();
      */
     startPollingNetwork() {
-        if (this.#pollingNetwork) return; // Guard — prevent duplicate polling loops
 
-        this.#mainAbortController = new AbortController();
+        if (this.#pollingNetwork) return;
         this.#pollingNetwork = true;
 
-        // If the tab is already hidden on start, pause immediately
         if (document.hidden) {
-            this.stopPollingNetwork();
             this.#pollingPausedByVisibilityListener = true;
+            this.stopPollingNetwork();
+        } else {
+
+            this.#pollingHandler();
         }
 
-        // Pause when tab is hidden, resume when visible again
-        document.addEventListener("visibilitychange", () => {
-            if (document.visibilityState === 'visible') {
-                if (this.#pollingPausedByVisibilityListener) {
-                    this.startPollingNetwork();
-                }
-            } else {
-                if (this.#pollingNetwork) {
-                    this.stopPollingNetwork();
-                    this.#pollingPausedByVisibilityListener = true;
-                }
-            }
-        }, { signal: this.#mainAbortController.signal });
+        if (!this.#mainAbortController) {
 
-        // Native offline event — use as an early-warning trigger.
-        // Immediately restarts the polling loop to run a confirmation ping
-        // ahead of the next scheduled cycle. Debounced to 2 seconds to
-        // prevent flickering connections from causing repeated restarts.
-        window.addEventListener("offline", () => {
-            if (this.#nativeEventBufferOffline) return;
+            this.#mainAbortController = new AbortController();
 
-            this.#nativeEventBufferOffline = true;
-            setTimeout(() => { this.#nativeEventBufferOffline = false; }, 2000);
+            document.addEventListener("visibilitychange", () => {
+                if (document.visibilityState === 'visible') {
+                    if (this.#pollingPausedByVisibilityListener) {
+                        this.#pollingPausedByVisibilityListener = false;
+                        this.startPollingNetwork();
+                    };
+                } else {
+                    if (this.#pollingNetwork) {
+                        this.#pollingPausedByVisibilityListener = true;
+                        this.stopPollingNetwork();
+                    };
+                };
+            }, { signal: this.#mainAbortController.signal });
 
-            this.stopPollingNetwork();
-            this.startPollingNetwork();
-        }, { signal: this.#mainAbortController.signal });
+            window.addEventListener("offline", () => {
 
-        // Native online event — same early-warning approach as offline.
-        // Kept as a separate buffer so a genuine rapid offline → online
-        // transition is never masked by the offline buffer.
-        window.addEventListener("online", () => {
-            if (this.#nativeEventBufferOnline) return;
+                if (this.#nativeEventBufferOffline || this.#pollingPausedByVisibilityListener) return;
 
-            this.#nativeEventBufferOnline = true;
-            setTimeout(() => { this.#nativeEventBufferOnline = false; }, 2000);
+                this.#nativeEventBufferOffline = true;
 
-            this.stopPollingNetwork();
-            this.startPollingNetwork();
-        }, { signal: this.#mainAbortController.signal });
+                setTimeout(() => {
+                    this.#nativeEventBufferOffline = false;
+                }, 2000);
 
-        this.#pollingHandler();
+                this.stopPollingNetwork();
+                this.startPollingNetwork();
+            }, { signal: this.#mainAbortController.signal });
+
+            window.addEventListener("online", () => {
+
+                if (this.#nativeEventBufferOnline || this.#pollingPausedByVisibilityListener) return;
+
+                this.#nativeEventBufferOnline = true;
+
+                setTimeout(() => {
+                    this.#nativeEventBufferOnline = false;
+                }, 2000);
+
+                this.stopPollingNetwork();
+                this.startPollingNetwork()
+
+            }, { signal: this.#mainAbortController.signal });
+        }
+
     }
 
     /**
-     * Stops the polling loop, cancels all pending timeouts and fetches,
-     * and removes the `visibilitychange`, `offline`, and `online` listeners
-     * by aborting the shared `AbortController`.
+     * Stops the polling loop and cancels any pending timeouts and in-flight fetch requests.
+     *
+     * If called for a reason other than a tab-visibility pause, this also aborts and
+     * nullifies the main AbortController, removing the `visibilitychange`, `online`,
+     * and `offline` window event listeners.
+     *
+     * Does **not** reset accumulated metrics — call {@link Monitor#destroy} for a full teardown
+     * or {@link Monitor#debug.reset} to clear metrics while keeping listeners intact.
+     *
      * @returns {void}
+     *
+     * @example
+     * UpLink.stopPollingNetwork();
      */
     stopPollingNetwork() {
         clearTimeout(this.#checkMainEndPointTimeOutId);
         clearTimeout(this.#pollingTimeOutId);
         clearTimeout(this.#forceTimeOutOnNetworkRequest);
 
-        if (this.#mainAbortController) this.#mainAbortController.abort();
-        if (this.#fetchAbortController) this.#fetchAbortController.abort();
 
+        if (this.#mainAbortController && !this.#pollingPausedByVisibilityListener) {
+            this.#mainAbortController.abort();
+            this.#mainAbortController = null;
+        }
+
+        if (this.#fetchAbortController) {
+            this.#fetchAbortController.abort()
+        }
         this.#pollingNetwork = false;
     }
 
     /**
-     * Signal bars representing the current connection strength.
-     * Updated on every ping cycle.
-     * @type {number} 0 (offline) to 5 (optimal)
-     */
-    get bars() { return this.#bars; }
-
-    /**
-     * Whether the device currently has internet access.
-     * Transitions trigger `online` and `offline` events.
-     * @type {boolean}
-     */
-    get online() { return this.#online; }
-
-    /**
-     * The current network condition. An object with three fields:
-     * - `label` — descriptive name (e.g. `"High Latency"`)
-     * - `alias` — short alias (e.g. `"Slow"`)
-     * - `code` — machine-readable code (e.g. `"NET_SLOW"`)
+     * Current signal bar count, derived from the average latency.
+     * Maps directly to the active {@link NetworkCondition}.
      *
-     * Starts as `{ label: "Syncing", alias: "Calculating", code: "NET_PENDING" }`
-     * until the first ping completes.
-     * @type {{ label: string, alias: string, code: string }}
-     */
-    get networkCondition() { return this.#networkCondition; }
-
-    /**
-     * Average latency across the rolling 10-ping window in ms.
-     * Returns `Infinity` if no successful pings have been recorded yet.
+     * | Bars | Condition     |
+     * |------|---------------|
+     * | 5    | Optimal       |
+     * | 4    | Stable        |
+     * | 3    | High Latency  |
+     * | 2    | Degraded      |
+     * | 1    | Critical      |
+     * | 0    | Disconnected  |
+     *
      * @type {number}
+     * @readonly
+     *
+     * @example
+     * console.log(UpLink.bars); // → 5
      */
-    get latency() {
-        if (this.#latencyLog.length === 0) return Infinity;
-        return this.#latencyLog.reduce((sum, val) => sum + val, 0) / this.#latencyLog.length;
+    get bars() {
+        return this.#bars
     }
 
     /**
-     * Average variation between consecutive latency readings in ms.
-     * High jitter indicates an unstable connection.
-     * Returns `0` if fewer than 2 readings are available.
-     * Returns `5000` if all available consecutive pairs include a failed ping.
+     * Whether UpLink currently considers the connection to be online.
+     * This is based on actual fetch success/failure, **not** `navigator.onLine`.
+     * Transitions fire `"online"` and `"offline"` events.
+     *
+     * @type {boolean}
+     * @readonly
+     *
+     * @example
+     * if (UpLink.online) {
+     *   submitForm();
+     * }
+     */
+    get online() {
+        return this.#online
+    }
+
+    /**
+     * The current network condition descriptor object.
+     *
+     * @type {NetworkCondition}
+     * @readonly
+     *
+     * @example
+     * const { label, alias, code } = UpLink.networkCondition;
+     * // → { label: "High Latency", alias: "Slow", code: "NET_SLOW" }
+     */
+    get networkCondition() {
+        return this.#networkCondition
+    }
+
+    /**
+     * Average latency calculated from the successful (non-`Infinity`) samples in
+     * the current rolling window of up to 10 pings.
+     *
+     * Returns `Infinity` if all samples in the current window are failures.
+     *
      * @type {number}
+     * @readonly
+     *
+     * @example
+     * console.log(`Avg latency: ${UpLink.latency.toFixed(0)}ms`);
+     */
+    get latency() {
+        const successful = this.#latencyLog.filter(v => v !== Infinity);
+        if (successful.length === 0) return Infinity;
+        return successful.reduce((sum, val) => sum + val, 0) / successful.length;
+    }
+
+    /**
+     * Average jitter (mean absolute deviation between consecutive latency samples) in ms.
+     * Calculated from the current rolling window.
+     *
+     * Returns `0` if fewer than 2 samples exist.
+     * Returns `5000` if all consecutive pairs contain a failure (`Infinity`), signalling
+     * that jitter is unmeasurable (effectively maxed out).
+     *
+     * @type {number}
+     * @readonly
+     *
+     * @example
+     * console.log(`Jitter: ${UpLink.jitter.toFixed(0)}ms`);
      */
     get jitter() {
         if (this.#latencyLog.length < 2) return 0;
-        const diffs = [];
+        let diffs = [];
         for (let i = 0; i < this.#latencyLog.length - 1; i++) {
             if (this.#latencyLog[i] !== Infinity && this.#latencyLog[i + 1] !== Infinity) {
                 diffs.push(Math.abs(this.#latencyLog[i] - this.#latencyLog[i + 1]));
@@ -466,84 +732,75 @@ class Monitor extends EventTarget {
     }
 
     /**
-     * A 0–100 reliability score based on ping success rate (70%) and
-     * jitter stability (30%).
+     * Estimated packet-loss percentage based on the ratio of `Infinity` samples to
+     * total samples in the current rolling window. Rounded to the nearest whole number.
      *
-     * The success rate counts any ping that did not fail outright (i.e. any
-     * entry that is not `Infinity`). High-latency pings are counted as
-     * successes — only complete failures penalise this score.
+     * Returns `0` when the log is empty.
      *
-     * Returns `0` if no pings have been recorded yet.
      * @type {number}
+     * @readonly
+     *
+     * @example
+     * if (UpLink.packetLoss > 20) {
+     *   showUnstableConnectionWarning();
+     * }
      */
-    get reliability() {
+    get packetLoss() {
         if (this.#latencyLog.length === 0) return 0;
-        const successRate = (
-            this.#latencyLog.filter(v => v !== Infinity).length / this.#latencyLog.length
-        ) * 100;
-        const jitterFactor = Math.max(0, 100 - (this.jitter / 10));
-        return Math.round((successRate * 0.7) + (jitterFactor * 0.3));
+        const failures = this.#latencyLog.filter(v => v === Infinity).length;
+        return Math.round((failures / this.#latencyLog.length) * 100);
     }
 
     /**
-     * Configures UpLink behaviour. **Must be called before attaching event
-     * listeners or reacting to network state.** Can only be called once —
-     * calling it a second time throws an `UpLinkError` with code
-     * `ALREADY_CONFIGURED`.
+     * Configures UpLink with custom options. **Must be called before any events are expected**
+     * and can only be called **once** per lifecycle — attempting to reconfigure a running instance
+     * throws an error. Call {@link Monitor#destroy} first if you need to reconfigure.
      *
-     * Internally, `config()` stops the current polling loop, applies all
-     * settings, then restarts polling cleanly with the new configuration.
+     * Internally, `config()` stops the polling loop, applies all provided options, validates them,
+     * then restarts polling from scratch.
      *
-     * @param {Object} [options={}]
+     * @param {Object}  [options={}]                       - Configuration options. All fields are optional.
+     * @param {Object}  [options.endPoints]                - Custom polling endpoints.
+     * @param {string}  [options.endPoints.main]           - Primary endpoint URL. Must be reachable via a `no-cors` fetch.
+     * @param {string}  [options.endPoints.backup]         - Fallback endpoint URL, used when `main` times out (> 3500ms).
+     * @param {Object}  [options.latencyThresholds]        - Override the ms boundaries for condition classification.
+     *   All four keys (`optimal`, `stable`, `highLatency`, `degraded`) must remain in strictly ascending order.
+     *   Values must be numbers > 0, and values ≤ 10ms are rejected as physically implausible.
+     *   Values ≤ 30ms trigger a `console.warn` (suppressible via `silenceWarnings`).
+     * @param {number}  [options.latencyThresholds.optimal]      - Upper bound for "Optimal" condition (default: 100).
+     * @param {number}  [options.latencyThresholds.stable]       - Upper bound for "Stable" condition (default: 250).
+     * @param {number}  [options.latencyThresholds.highLatency]  - Upper bound for "High Latency" condition (default: 500).
+     * @param {number}  [options.latencyThresholds.degraded]     - Upper bound for "Degraded" condition (default: 700).
+     * @param {Object}  [options.pollingIntervals]               - Override the adaptive polling step durations (ms).
+     *   All values must be numbers ≥ 500ms to prevent network flooding.
+     * @param {number}  [options.pollingIntervals.unstable]      - Interval used when condition is changing (default: 2000).
+     * @param {number}  [options.pollingIntervals.stabilising]   - Interval after 10 stable readings (default: 4000).
+     * @param {number}  [options.pollingIntervals.stable]        - Interval after 20 stable readings (default: 6000).
+     * @param {boolean} [options.silenceWarnings=false]          - When `true`, suppresses non-critical `console.warn` calls inside `config()`.
      *
-     * @param {Object} [options.endPoints] - Custom polling endpoints.
-     *   Both must support `no-cors` fetch mode.
-     * @param {string} [options.endPoints.main] - Primary endpoint. Defaults to Google DNS.
-     * @param {string} [options.endPoints.backup] - Fallback endpoint used when `main` times out.
-     *   Defaults to Cloudflare. UpLink automatically switches back to `main` every 5 minutes.
+     * @throws {UpLinkError} `"ALREADY_CONFIGURED"` — if `config()` is called more than once.
+     * @throws {UpLinkError} `"CONFIG_ERR"` — if any option value fails validation.
      *
-     * @param {Object} [options.latencyThresholds] - Override the ms thresholds used to
-     *   classify the connection. All values must be positive numbers in strictly
-     *   ascending order. Values ≤ 10ms throw an error (physically impossible over a network).
-     *   Values ≤ 30ms log a warning unless `silenceWarnings` is `true`.
-     * @param {number} [options.latencyThresholds.optimal=100]
-     * @param {number} [options.latencyThresholds.stable=250]
-     * @param {number} [options.latencyThresholds.highLatency=500]
-     * @param {number} [options.latencyThresholds.degraded=700]
-     *
-     * @param {Object} [options.pollingIntervals] - Override polling interval durations in ms.
-     *   Minimum allowed value is 500ms to prevent network flooding.
-     * @param {number} [options.pollingIntervals.unstable=2000] - Used when the condition
-     *   is changing or has just changed.
-     * @param {number} [options.pollingIntervals.stabilising=4000] - Used after 10 consecutive
-     *   pings with the same condition.
-     * @param {number} [options.pollingIntervals.stable=6000] - Used after 20 consecutive
-     *   pings with the same condition.
-     *
-     * @param {boolean} [options.silenceWarnings=false] - Set to `true` to suppress
-     *   console warnings about unusually low latency threshold values.
-     *
-     * @throws {UpLinkError} ALREADY_CONFIGURED — if `config()` has already been called.
-     * @throws {UpLinkError} CONFIG_ERR — if any option value is invalid.
+     * @returns {void}
      *
      * @example
-     * // Call before anything else
-     * UpLink.config({
-     *   pollingIntervals: { stable: 10000 },
-     *   latencyThresholds: { optimal: 80, stable: 200, highLatency: 400, degraded: 600 }
-     * });
-     *
-     * UpLink.addEventListener("ping", (e) => {
-     *   console.log(e.detail.condition.label);
-     * });
-     *
-     * @example
-     * // Custom endpoints
      * UpLink.config({
      *   endPoints: {
-     *     main: 'https://my-server.com/ping',
-     *     backup: 'https://dns.google/resolve?name=.&type=NS'
-     *   }
+     *     main: 'https://api.example.com/health',
+     *     backup: 'https://1.1.1.1/cdn-cgi/trace',
+     *   },
+     *   latencyThresholds: {
+     *     optimal: 80,
+     *     stable: 200,
+     *     highLatency: 400,
+     *     degraded: 600,
+     *   },
+     *   pollingIntervals: {
+     *     unstable: 1500,
+     *     stabilising: 3000,
+     *     stable: 5000,
+     *   },
+     *   silenceWarnings: true,
      * });
      */
     config({ endPoints, pollingIntervals, latencyThresholds, silenceWarnings } = {}) {
@@ -581,33 +838,38 @@ class Monitor extends EventTarget {
         }
 
         if (latencyThresholds) {
+
             if (!Utility.isPlainObject(latencyThresholds)) throw new UpLinkError(
                 "'latencyThresholds' is expected to be a plain object",
                 "CONFIG_ERR"
             );
 
-            // Sort threshold values ascending to validate in order
             const thresholdValues = Object.values(this.#latencyThresholds).sort((a, b) => a - b);
-            const invertedLatencyThresholds = {};
+            const invertedLatencyThresholds = {}
 
-            // Invert the defaults map so we can look up keys by value
             Object.keys(this.#latencyThresholds).forEach(key => {
                 invertedLatencyThresholds[this.#latencyThresholds[key]] = key;
-            });
+            })
 
-            let sequenceIntegrity = { value: 0, key: "" };
+            let sequenceIntegrity = {
+                value: 0,
+                key: ""
+            };
 
             thresholdValues.forEach(threshold => {
+
                 let value;
                 const invertedKey = invertedLatencyThresholds[threshold];
 
                 if (latencyThresholds[invertedKey] !== undefined) {
+
                     const setValue = Number(latencyThresholds[invertedKey]);
-                    if (!isNaN(setValue)) { value = setValue; }
-                    else throw new UpLinkError(
-                        `the 'latencyThreshold' value '${invertedKey}' can only be a number`,
+
+                    if (!isNaN(setValue)) { value = setValue } else throw new UpLinkError(
+                        `the 'latencyThreshold' value '${invertedKey}' can only a number`,
                         "CONFIG_ERR"
                     );
+
                 } else value = threshold;
 
                 if (value < 0) throw new UpLinkError(
@@ -616,27 +878,34 @@ class Monitor extends EventTarget {
                 );
 
                 if (sequenceIntegrity.value <= value) {
+
                     if (latencyThresholds[invertedKey] !== undefined) {
+
                         if (value <= 10) throw new UpLinkError(
-                            `impossible latency value set for '${invertedKey}'. Latency below 10ms is unlikely over a network.`,
+                            `imposible latency value set for '${invertedKey}'. latency below 10ms is unlikly over a network`,
                             "CONFIG_ERR"
                         );
-                        else if (value <= 30 && !this.#silenceWarnings) {
-                            console.warn(
+
+                        else if (value <= 30) {
+
+                            !this.#silenceWarnings ? console.warn(
                                 `The latency threshold for '${invertedKey}' is set to '${value}ms'. While technically possible on high-end local fiber, it is highly unusual for general network conditions. Are you sure this is the target you intended?`
-                            );
+                            ) : ""
                         }
+
                         this.#latencyThresholds[invertedKey] = value;
-                    }
+                    };
+
                 } else throw new UpLinkError(
-                    `the value set for '${invertedKey}' cannot be less than that set for '${sequenceIntegrity.key}'`,
+                    `the value set for '${invertedKey}' cannot be less than that set for ${sequenceIntegrity.key}`,
                     "CONFIG_ERR"
                 );
 
                 sequenceIntegrity.value = value;
                 sequenceIntegrity.key = invertedKey;
-            });
-        }
+            })
+
+        };
 
         if (pollingIntervals) {
             if (!Utility.isPlainObject(pollingIntervals)) throw new UpLinkError(
@@ -646,20 +915,22 @@ class Monitor extends EventTarget {
 
             for (const key in this.#pollingIntervals) {
                 if (pollingIntervals[key] !== undefined) {
+
                     const setValue = Number(pollingIntervals[key]);
+
                     if (!isNaN(setValue)) {
-                        if (setValue < 500) throw new UpLinkError(
-                            `the 'pollingIntervals' value '${key}' is too low. Minimum allowed is 500ms to prevent network flooding.`,
-                            "CONFIG_ERR"
-                        );
+                        if (setValue < 500) {
+                            throw new UpLinkError(
+                                `the 'pollingIntervals' value '${key}' is too low. Minimum allowed is 500ms to prevent network flooding.`,
+                                "CONFIG_ERR"
+                            );
+                        }
+
                         this.#pollingIntervals[key] = setValue;
-                    } else throw new UpLinkError(
-                        `the 'pollingIntervals' value '${key}' can only be a number`,
-                        "CONFIG_ERR"
-                    );
-                }
-            }
-        }
+                    } else throw new UpLinkError(`the 'pollingIntervals' value '${key}' can only be a number`, "CONFIG_ERR");
+                };
+            };
+        };
 
         this.#currentpollingInterval = this.#pollingIntervals.unstable;
         this.#currentEndPoint = {
@@ -668,165 +939,241 @@ class Monitor extends EventTarget {
         };
 
         this.#configured = true;
+
         this.startPollingNetwork();
     }
 
     /**
-     * Periodically checks whether the main endpoint has recovered after a
-     * timeout caused a switch to the backup. Runs every 5 minutes.
-     * Recursively schedules itself until the main endpoint responds.
-     * When the main endpoint responds, polling switches back to it automatically.
-     * @returns {void}
+     * Schedules a periodic check to see if the main endpoint has recovered after UpLink
+     * falls back to the backup endpoint. Runs every 60 seconds. If the main endpoint
+     * responds, it is restored as the active endpoint. If it continues to time out,
+     * the check reschedules itself.
+     *
+     * Only one check runs at a time; subsequent calls while a check is pending are no-ops.
+     *
      * @private
+     * @returns {void}
      */
     #checkMainEndPointForAPulse() {
+
         clearTimeout(this.#checkMainEndPointTimeOutId);
 
         this.#checkMainEndPointTimeOutId = setTimeout(async () => {
-            const abortController = new AbortController();
-            const timeout = setTimeout(() => { abortController.abort(); }, 3500);
+
+            const abortController = new AbortController()
+            const timeout = setTimeout(() => {
+                abortController.abort();
+            }, 3500);
 
             try {
                 await fetch(this.#endPoints.main, {
                     mode: 'no-cors',
+                    cache: 'no-store',
                     signal: abortController.signal
                 });
 
                 clearTimeout(timeout);
 
-                // Main endpoint is back — switch back to it
                 this.#currentEndPoint.endPoint = this.#endPoints.main;
                 this.#currentEndPoint.type = "main";
 
             } catch (e) {
                 clearTimeout(timeout);
-                // Still unreachable — try again in another 5 minutes
                 this.#checkMainEndPointForAPulse();
             }
 
             this.#checkMainEndPointTimeOutId = false;
-        }, 300000); // 5 minutes
+        }, 60000);
     }
 
     /**
-     * Core polling loop. Fetches the current endpoint, records the latency,
-     * and schedules the next cycle. Accounts for request duration when
-     * calculating the next interval so timing stays consistent.
+     * Fully tears down the UpLink instance: stops polling, removes all window/document
+     * event listeners, and resets all internal state and metrics to their initial values.
      *
-     * On timeout (3.5s), switches from main → backup or backup → main and
-     * initiates a background check to restore the main endpoint if needed.
+     * Also resets the `#configured` flag, allowing `config()` to be called again if needed.
      *
-     * @returns {Promise<void>}
+     * Note: This does **not** remove any `"ping"`, `"online"`, or other CustomEvent listeners
+     * that external code attached via `on()`. Those must be removed manually with `off()`.
+     *
+     * @returns {void}
+     *
+     * @example
+     * // Teardown before removing the component that uses UpLink
+     * UpLink.destroy();
+     */
+    destroy() {
+
+        this.stopPollingNetwork();
+        if (this.#mainAbortController) {
+            this.#mainAbortController.abort()
+            this.#mainAbortController = null;
+        }
+
+        this.#latencyLog = [];
+        this.#stabilityLatencyLog = [];
+        this.#stabilityLatencyLogLastEntry = undefined;
+        this.#consecutiveFailures = 0;
+        this.#bars = 0;
+        this.#online = navigator.onLine;
+        this.#currentEndPoint = {
+            endPoint: this.#endPoints.main,
+            type: "main"
+        };
+        this.#checkMainEndPointTimeOutId = false;
+        this.#pollingPausedByVisibilityListener = false;
+        this.#networkCondition = this.#networkConditionStates.syncing;
+        this.#nativeEventBufferOffline = false;
+        this.#nativeEventBufferOnline = false;
+        this.#configured = false;
+        this.#currentpollingInterval = this.#pollingIntervals.unstable;
+    }
+
+    /**
+     * The core polling loop. Fires a `no-cors` fetch to the current endpoint, records
+     * the round-trip time (or `Infinity` on failure), updates the consecutive-failure counter,
+     * dispatches `"online"` / `"offline"` transition events as appropriate, then schedules
+     * the next cycle.
+     *
+     * Timing: the next iteration is scheduled so that the **wall-clock interval** between
+     * the *start* of consecutive polls is approximately `#currentpollingInterval`. If a ping
+     * takes longer than the interval, the next poll fires immediately (0ms delay).
+     *
+     * Endpoint failover: if the fetch does not complete within 3500ms, the abort controller
+     * is triggered and the active endpoint is toggled between main and backup. When falling
+     * back to backup, `#checkMainEndPointForAPulse()` is started to monitor recovery.
+     *
      * @private
+     * @async
+     * @returns {Promise<void>}
      */
     async #pollingHandler() {
-        const start = Date.now();
+        const start = performance.now();
 
         const restart = () => {
-            const timeoutDuration = this.#currentpollingInterval - (Date.now() - start);
+
+            const timeoutDuration = this.#currentpollingInterval - (performance.now() - start);
+
             if (this.#pollingNetwork) {
                 this.#pollingTimeOutId = setTimeout(() => {
                     this.#pollingHandler();
                 }, (timeoutDuration < 0) ? 0 : timeoutDuration);
-            }
-        };
+            };
+        }
 
         this.#fetchAbortController = new AbortController();
 
         try {
-            // Force-abort and switch endpoints if the fetch takes longer than 3.5 seconds
             this.#forceTimeOutOnNetworkRequest = setTimeout(() => {
                 this.#fetchAbortController.abort();
 
                 if (this.#currentEndPoint.type === "main") {
-                    // Main timed out — fall back to backup and watch for recovery
+
                     this.#currentEndPoint.endPoint = this.#endPoints.backup;
                     this.#currentEndPoint.type = "backup";
-                    if (this.#checkMainEndPointTimeOutId === false) this.#checkMainEndPointForAPulse();
+                    (this.#checkMainEndPointTimeOutId === false) ? this.#checkMainEndPointForAPulse() : ""
                 } else {
-                    // Backup also timed out — switch back to main and cancel the recovery watch
+
                     this.#currentEndPoint.endPoint = this.#endPoints.main;
                     this.#currentEndPoint.type = "main";
                     clearTimeout(this.#checkMainEndPointTimeOutId);
                     this.#checkMainEndPointTimeOutId = false;
                 }
+
             }, 3500);
 
             await fetch(this.#currentEndPoint.endPoint, {
                 mode: 'no-cors',
+                cache: 'no-store',
                 signal: this.#fetchAbortController.signal
             });
 
             clearTimeout(this.#forceTimeOutOnNetworkRequest);
 
-            // Transition from offline → online
             if (!this.#online) {
                 this.dispatchEvent(new CustomEvent("online", { cancelable: true }));
                 this.#online = true;
             }
 
-            // Replace any Infinity entries before recording new latency so the
-            // average isn't permanently skewed by old failures
-            if (this.#latencyLog.includes(Infinity)) {
-                this.#latencyLog = this.#latencyLog.map(
-                    (value) => (value === Infinity) ? this.#latencyThresholds.degraded : value
-                );
-            }
-
-            this.#latencyLog.unshift(Date.now() - start);
+            this.#latencyLog.unshift(performance.now() - start);
             if (this.#latencyLog.length > 10) this.#latencyLog.pop();
 
+            this.#consecutiveFailures = 0;
             this.#networkConditionCheck();
 
         } catch (error) {
-            // Ping failed — record as Infinity and check if we just went offline
+            this.#consecutiveFailures++;
+
             this.#latencyLog.unshift(Infinity);
             if (this.#latencyLog.length > 10) this.#latencyLog.pop();
 
             this.#networkConditionCheck();
 
-            // Transition from online → offline
             if (this.#online) {
                 this.dispatchEvent(new CustomEvent("offline", { cancelable: true }));
                 this.#online = false;
             }
 
+
         } finally {
-            this.#pollingNetwork ? restart() : "";
+            if (this.#pollingNetwork) restart();
+
+            if (this.#debugStreamEnabled) {
+
+                this.dispatchEvent(new CustomEvent("debug:ping", {
+                    detail: {
+                        endpoint: this.#currentEndPoint.type,
+                        duration: performance.now() - start,
+                        snapshot: this.debug.state()
+                    }
+                }));
+
+            }
         }
     }
 
     /**
-     * Evaluates the current average latency against the configured thresholds,
-     * updates `#bars` and `#networkCondition`, runs the stability check,
-     * and fires the `ping` event.
-     * @returns {void}
+     * Evaluates the current average latency and consecutive-failure count, sets `#bars`
+     * and `#networkCondition` accordingly, then calls `#stabilityCheck()` and dispatches
+     * a `"ping"` event.
+     *
+     * **Disconnected override**: if `#consecutiveFailures >= 2`, the condition is forced to
+     * `disconnected` (bars = 0) regardless of the latency average.
+     *
+     * This method is called after every polling cycle (both successful and failed).
+     *
      * @private
+     * @returns {void}
      */
     #networkConditionCheck() {
         const avg = this.latency;
+        const isDisconnected = this.#consecutiveFailures >= 2;
 
-        if (avg < this.#latencyThresholds.optimal)         { this.#bars = 5; this.#networkCondition = this.#networkConditionStates.optimal; }
-        else if (avg < this.#latencyThresholds.stable)      { this.#bars = 4; this.#networkCondition = this.#networkConditionStates.stable; }
-        else if (avg < this.#latencyThresholds.highLatency) { this.#bars = 3; this.#networkCondition = this.#networkConditionStates.highLatency; }
-        else if (avg < this.#latencyThresholds.degraded)    { this.#bars = 2; this.#networkCondition = this.#networkConditionStates.degraded; }
-        else if (avg !== Infinity)                          { this.#bars = 1; this.#networkCondition = this.#networkConditionStates.critical; }
-        else                                                { this.#bars = 0; this.#networkCondition = this.#networkConditionStates.disconnected; }
+        if (isDisconnected) {
+            this.#bars = 0;
+            this.#networkCondition = this.#networkConditionStates.disconnected;
+        } else if (avg < this.#latencyThresholds.optimal) {
+            this.#bars = 5;
+            this.#networkCondition = this.#networkConditionStates.optimal;
+        }
+        else if (avg < this.#latencyThresholds.stable) {
+            this.#bars = 4;
+            this.#networkCondition = this.#networkConditionStates.stable;
+        }
+        else if (avg < this.#latencyThresholds.highLatency) {
+            this.#bars = 3;
+            this.#networkCondition = this.#networkConditionStates.highLatency;
+        }
+        else if (avg < this.#latencyThresholds.degraded) {
+            this.#bars = 2;
+            this.#networkCondition = this.#networkConditionStates.degraded;
+        } else {
+            this.#bars = 1;
+            this.#networkCondition = this.#networkConditionStates.critical;
+        }
 
         if (this.#pollingNetwork) {
             this.#stabilityCheck();
 
-            /**
-             * Fired on every polling cycle with the latest network snapshot.
-             * @event Monitor#ping
-             * @type {CustomEvent}
-             * @property {boolean}  detail.online      - Current online status.
-             * @property {number}   detail.latency     - Average latency in ms (`Infinity` if offline).
-             * @property {Object}   detail.condition   - Current condition `{ label, alias, code }`.
-             * @property {number}   detail.bars        - Signal bars, 0–5.
-             * @property {number}   detail.jitter      - Average jitter in ms.
-             * @property {number}   detail.reliability - Reliability score, 0–100.
-             */
             this.dispatchEvent(new CustomEvent("ping", {
                 detail: {
                     online: this.#online,
@@ -834,29 +1181,43 @@ class Monitor extends EventTarget {
                     condition: this.#networkCondition,
                     bars: this.#bars,
                     jitter: this.jitter,
-                    reliability: this.reliability,
+                    packetLoss: this.packetLoss,
                 }
             }));
         }
     }
 
     /**
-     * Tracks how long the connection has been in the same condition and
-     * backs off the polling interval when stable. Resets to the `unstable`
-     * interval whenever the condition changes.
+     * Maintains the adaptive polling interval by tracking how long the condition label
+     * has remained unchanged.
      *
-     * Progression:
-     * - 0–10 consecutive same-condition pings  → `unstable` interval
-     * - 10–20 consecutive same-condition pings → `stabilising` interval
-     * - 20+  consecutive same-condition pings  → `stable` interval
+     * - When the condition label **changes**: resets the stability log, resets the polling
+     *   interval to `unstable`, and dispatches a `"networkConditionChange"` event.
+     * - After **10** consecutive identical readings: steps up to `stabilising` interval.
+     * - After **20** consecutive identical readings: steps up to `stable` interval and
+     *   trims the stability log to cap at 20 entries.
      *
-     * @returns {void}
+     * Called once per polling cycle, from `#networkConditionCheck()`.
+     *
      * @private
+     * @returns {void}
      */
     #stabilityCheck() {
+
         if (this.#stabilityLatencyLogLastEntry !== this.#networkCondition.label) {
             this.#stabilityLatencyLog = [];
             this.#currentpollingInterval = this.#pollingIntervals.unstable;
+
+            this.dispatchEvent(new CustomEvent("networkConditionChange", {
+                detail: {
+                    online: this.#online,
+                    latency: this.latency,
+                    condition: this.#networkCondition,
+                    bars: this.#bars,
+                    jitter: this.jitter,
+                    packetLoss: this.packetLoss,
+                }
+            }));
         }
 
         this.#stabilityLatencyLog.unshift(this.#networkCondition.label);
@@ -874,27 +1235,114 @@ class Monitor extends EventTarget {
     }
 
     /**
-     * Returns the current average latency converted to the specified unit.
-     * Returns `Infinity` if the connection is offline.
+     * Returns the current average latency converted to the requested unit.
      *
-     * @param {"ms"|"s"|"m"} [format="ms"] - The time unit to return.
-     *   `"ms"` = milliseconds, `"s"` = seconds, `"m"` = minutes.
-     * @returns {number} The latency in the requested unit, or `Infinity`.
+     * Supported formats:
+     * - `"ms"` (default) — milliseconds, returned as-is.
+     * - `"s"` — seconds (`latency / 1000`). Returns `0` when latency is exactly `0`.
+     *
+     * Returns `Infinity` in any format when the connection is offline or all samples failed.
+     *
+     * @param {"ms"|"s"} [format="ms"] - The unit to convert to.
+     * @returns {number} Latency in the requested unit, or `Infinity`.
+     * @throws {UpLinkError} `"CONFIG_ERR"` — if `format` is not a string.
      *
      * @example
-     * UpLink.getLatencyAs("ms"); // 142.3
-     * UpLink.getLatencyAs("s");  // 0.1423
+     * UpLink.getLatencyAs("ms"); // → 142
+     * UpLink.getLatencyAs("s");  // → 0.142
+     * UpLink.getLatencyAs("s");  // → Infinity  (when offline)
      */
     getLatencyAs(format = "ms") {
+        if (typeof format !== "string") {
+            throw new UpLinkError(
+                "'getLatencyAs()' only accepts a string, e.g. 'ms', 's'",
+                "CONFIG_ERR"
+            );
+        }
+
         if (this.latency !== Infinity) {
             switch (format) {
                 case "s": return (this.latency === 0) ? 0 : this.latency / 1000;
-                case "m": return (this.latency === 0) ? 0 : this.latency / 60000;
-                default:  return this.latency;
+                default: return this.latency;
             }
         } else return Infinity;
     }
+
+    // ─── Debug helpers ────────────────────────────────────────────────────────
+
+    /**
+     * Resets all runtime metrics and internal state to initial values without stopping
+     * the polling loop or removing event listeners.
+     *
+     * Resets: `#latencyLog`, `#stabilityLatencyLog`, `#stabilityLatencyLogLastEntry`,
+     * `#consecutiveFailures`, `#bars`, `#online`, and `#networkCondition`.
+     *
+     * Exposed publicly via {@link Monitor#debug.reset}.
+     *
+     * @private
+     * @returns {void}
+     */
+    #debugReset() {
+        this.#latencyLog = [];
+        this.#stabilityLatencyLog = [];
+        this.#stabilityLatencyLogLastEntry = undefined;
+        this.#consecutiveFailures = 0;
+        this.#bars = 0;
+        this.#online = navigator.onLine;
+        this.#networkCondition = this.#networkConditionStates.syncing;
+    }
+
+    /**
+     * Injects mock latency values into the rolling log and immediately re-evaluates
+     * the network condition. Does **not** affect `#consecutiveFailures` (resets it to 0).
+     *
+     * Exposed publicly via {@link Monitor#debug.spike}.
+     *
+     * @private
+     * @param {number[]} [mockLatency=[2000]] - Latency values to prepend to the log.
+     *   Each value is inserted at the front (`unshift`) in order, trimming the log to 10
+     *   entries after each insertion. Use `Infinity` to simulate a failed ping.
+     * @throws {UpLinkError} `"DEBUG_ERR"` — if `mockLatency` is not an array of numbers.
+     * @returns {void}
+     */
+    #injectLatency(mockLatency = [2000]) {
+        if (!Array.isArray(mockLatency) || mockLatency.some(v => typeof v !== 'number')) {
+            throw new UpLinkError("'spike()' expects an array of numbers", "DEBUG_ERR");
+        }
+
+        // Reset, but then recount based on the injected mock data
+        this.#consecutiveFailures = 0;
+
+        mockLatency.forEach(latency => {
+            if (latency === Infinity) {
+                this.#consecutiveFailures++;
+            } else {
+                this.#consecutiveFailures = 0;
+            }
+
+            this.#latencyLog.unshift(latency);
+            if (this.#latencyLog.length > 10) this.#latencyLog.pop();
+        });
+
+        this.#networkConditionCheck();
+
+    }
 }
 
+/**
+ * The UpLink singleton instance. Import and use this directly — do not instantiate `Monitor`.
+ *
+ * Polling starts automatically on import. Use `config()` to customise before your first
+ * event listener if needed.
+ *
+ * @type {Monitor}
+ *
+ * @example
+ * import UpLink from './uplink.js';
+ *
+ * UpLink.on('networkConditionChange', ({ detail }) => {
+ *   document.title = `Network: ${detail.condition.alias} (${detail.bars} bars)`;
+ * });
+ */
 const UpLink = new Monitor();
 export default UpLink;

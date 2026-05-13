@@ -1,5 +1,58 @@
 "use strict"
-//V2.0.1
+
+const VERSION = "3.0.0";
+
+function printSignature() {
+    if (typeof window !== "undefined") {
+        const pkg = {
+            name: "UpLink",
+            description: "A lightweight, event-driven network quality monitor that goes beyond navigator.onLine.",
+            author: "Raymond Ngule",
+            license: "MIT",
+            version: VERSION,
+            repo: "https://github.com/sir-fancypants/UpLink",
+        };
+
+        const c = {
+            group: `color: #2898e2; font-weight: bold; font-family: monospace;`,
+            banner: "color: #2898e2; font-family: monospace; font-size: 12px; line-height: 1.1; font-weight: bold;",
+            dot: "color: #a03131; font-weight: bold;",
+            key: "color: #20b9d4; font-family: monospace; font-size: 15px;",
+            val: "font-family: monospace; font-size: 13px;",
+            dim: "color: #20b9d4; font-family: monospace; font-size: 14px;",
+            badge: "background: #2385c6; color: #ffffff; border: 2px solid #cccccc; border-radius: 5px; padding: 5px 6px; font-size: 14px; font-family: monospace; font-weight: bold;",
+        };
+
+        const bannerArt = [
+            " ██╗   ██╗██████╗ ██╗     ██╗███╗   ██╗██╗  ██╗",
+            " ██║   ██║██╔══██╗██║     ██║████╗  ██║██║ ██╔╝",
+            " ██║   ██║██████╔╝██║     ██║██╔██╗ ██║█████╔╝ ",
+            " ██║   ██║██╔═══╝ ██║     ██║██║╚██╗██║██╔═██╗ ",
+            " ╚██████╔╝██║     ███████╗██║██║ ╚████║██║  ██╗",
+            "  ╚═════╝ ╚═╝     ╚══════╝╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝",
+        ].join("\n");
+
+        const rows = [
+            ["version", pkg.version],
+            ["description", pkg.description],
+            ["author", pkg.author],
+            ["license", pkg.license],
+            ["repository", pkg.repo],
+        ];
+
+        console.groupCollapsed(`%c ● SYSTEM READY %c v${pkg.version} %c© 2026 ${pkg.author}`, c.badge, c.dim, c.dim);
+
+        console.log(`%c${bannerArt}`, c.banner);
+
+        rows.forEach(([key, val]) => {
+            const k = `◆ ${key}`.padEnd(16);
+            console.log(`%c${k.slice(0, 1)}%c${k.slice(1)}%c${val}`, c.dot, c.key, c.val);
+        });
+
+        console.groupEnd();
+    }
+}
+
 class Utility {
     static isPlainObject(value) {
         return Object.prototype.toString.call(value) === '[object Object]';
@@ -123,65 +176,115 @@ class Monitor extends EventTarget {
 
     #nativeEventBufferOnline = false;
 
+    #consecutiveFailures = 0;
+    #debugStreamEnabled = false;
     constructor() {
         super();
+
+        this.on = this.addEventListener.bind(this);
+
+        this.off = this.removeEventListener.bind(this);
+
+        this.debug = Object.freeze({
+            version: () => {
+                printSignature();
+                return VERSION;
+            },
+
+            logs: () => this.#latencyLog.slice(),
+
+            state: () => ({
+                online: this.#online,
+                bars: this.#bars,
+                condition: { ...this.#networkCondition },
+                latencyLog: [...this.#latencyLog],
+                latency: this.latency,
+                jitter: this.jitter,
+                packetLoss: this.packetLoss,
+                endpoint: { ...this.#currentEndPoint },
+                interval: this.#currentpollingInterval,
+                failures: this.#consecutiveFailures
+            }),
+
+            endpoints: () => ({
+                main: this.#endPoints.main,
+                backup: this.#endPoints.backup,
+                current: this.#currentEndPoint
+            }),
+
+            reset: () => this.#debugReset(),
+
+            spike: (mockLatency) => this.#injectLatency(mockLatency),
+            stream: (val = true) => {
+                this.#debugStreamEnabled = !!val;
+            }
+
+        });
+
         this.startPollingNetwork();
     };
 
     startPollingNetwork() {
-        if (this.#pollingNetwork) return;
-        this.#mainAbortController = new AbortController();
 
+        if (this.#pollingNetwork) return;
         this.#pollingNetwork = true;
 
         if (document.hidden) {
-            this.stopPollingNetwork();
             this.#pollingPausedByVisibilityListener = true;
+            this.stopPollingNetwork();
+        } else {
+
+            this.#pollingHandler();
         }
 
-        document.addEventListener("visibilitychange", () => {
-            if (document.visibilityState === 'visible') {
-                if (this.#pollingPausedByVisibilityListener) {
-                    this.startPollingNetwork();
+        if (!this.#mainAbortController) {
+
+            this.#mainAbortController = new AbortController();
+
+            document.addEventListener("visibilitychange", () => {
+                if (document.visibilityState === 'visible') {
+                    if (this.#pollingPausedByVisibilityListener) {
+                        this.#pollingPausedByVisibilityListener = false;
+                        this.startPollingNetwork();
+                    };
+                } else {
+                    if (this.#pollingNetwork) {
+                        this.#pollingPausedByVisibilityListener = true;
+                        this.stopPollingNetwork();
+                    };
                 };
-            } else {
-                if (this.#pollingNetwork) {
-                    this.stopPollingNetwork();
-                    this.#pollingPausedByVisibilityListener = true;
-                };
-            };
-        }, { signal: this.#mainAbortController.signal });
+            }, { signal: this.#mainAbortController.signal });
 
-        window.addEventListener("offline", () => {
+            window.addEventListener("offline", () => {
 
-            if (this.#nativeEventBufferOffline) return;
+                if (this.#nativeEventBufferOffline || this.#pollingPausedByVisibilityListener) return;
 
-            this.#nativeEventBufferOffline = true;
+                this.#nativeEventBufferOffline = true;
 
-            setTimeout(() => {
-                this.#nativeEventBufferOffline = false;
-            }, 2000);
+                setTimeout(() => {
+                    this.#nativeEventBufferOffline = false;
+                }, 2000);
 
-            this.stopPollingNetwork();
-            this.startPollingNetwork()
-        }, { signal: this.#mainAbortController.signal });
+                this.stopPollingNetwork();
+                this.startPollingNetwork();
+            }, { signal: this.#mainAbortController.signal });
 
-        window.addEventListener("online", () => {
+            window.addEventListener("online", () => {
 
-            if (this.#nativeEventBufferOnline) return;
+                if (this.#nativeEventBufferOnline || this.#pollingPausedByVisibilityListener) return;
 
-            this.#nativeEventBufferOnline = true;
+                this.#nativeEventBufferOnline = true;
 
-            setTimeout(() => {
-                this.#nativeEventBufferOnline = false;
-            }, 2000);
+                setTimeout(() => {
+                    this.#nativeEventBufferOnline = false;
+                }, 2000);
 
-            this.stopPollingNetwork();
-            this.startPollingNetwork()
+                this.stopPollingNetwork();
+                this.startPollingNetwork()
 
-        }, { signal: this.#mainAbortController.signal });
+            }, { signal: this.#mainAbortController.signal });
+        }
 
-        this.#pollingHandler();
     }
 
     stopPollingNetwork() {
@@ -190,8 +293,9 @@ class Monitor extends EventTarget {
         clearTimeout(this.#forceTimeOutOnNetworkRequest);
 
 
-        if (this.#mainAbortController) {
-            this.#mainAbortController.abort()
+        if (this.#mainAbortController && !this.#pollingPausedByVisibilityListener) {
+            this.#mainAbortController.abort();
+            this.#mainAbortController = null;
         }
 
         if (this.#fetchAbortController) {
@@ -213,8 +317,9 @@ class Monitor extends EventTarget {
     }
 
     get latency() {
-        if (this.#latencyLog.length === 0) return Infinity;
-        return this.#latencyLog.reduce((sum, val) => sum + val, 0) / this.#latencyLog.length;
+        const successful = this.#latencyLog.filter(v => v !== Infinity);
+        if (successful.length === 0) return Infinity;
+        return successful.reduce((sum, val) => sum + val, 0) / successful.length;
     }
 
     get jitter() {
@@ -228,12 +333,10 @@ class Monitor extends EventTarget {
         return diffs.length ? (diffs.reduce((a, b) => a + b) / diffs.length) : 5000;
     }
 
-    get reliability() {
-        if (this.#latencyLog.length === 0) return 0;
-
-        const successRate = (this.#latencyLog.filter(v => v !== Infinity).length / this.#latencyLog.length) * 100;
-        const jitterFactor = Math.max(0, 100 - (this.jitter / 10));
-        return Math.round((successRate * 0.7) + (jitterFactor * 0.3));
+    get packetLoss() {
+        if (this.#latencyLog.length === 0) return 0; // denominator is always ≥ 1 past here
+        const failures = this.#latencyLog.filter(v => v === Infinity).length;
+        return Math.round((failures / this.#latencyLog.length) * 100);
     }
 
     config({ endPoints, pollingIntervals, latencyThresholds, silenceWarnings } = {}) {
@@ -392,6 +495,7 @@ class Monitor extends EventTarget {
             try {
                 await fetch(this.#endPoints.main, {
                     mode: 'no-cors',
+                    cache: 'no-store',
                     signal: abortController.signal
                 });
 
@@ -406,15 +510,42 @@ class Monitor extends EventTarget {
             }
 
             this.#checkMainEndPointTimeOutId = false;
-        }, 300000);
+        }, 60000);
+    }
+
+    destroy() {
+
+        this.stopPollingNetwork();
+        if (this.#mainAbortController) {
+            this.#mainAbortController.abort()
+            this.#mainAbortController = null;
+        }
+
+        this.#latencyLog = [];
+        this.#stabilityLatencyLog = [];
+        this.#stabilityLatencyLogLastEntry = undefined;
+        this.#consecutiveFailures = 0;
+        this.#bars = 0;
+        this.#online = navigator.onLine;
+        this.#currentEndPoint = {
+            endPoint: this.#endPoints.main,
+            type: "main"
+        };
+        this.#checkMainEndPointTimeOutId = false;
+        this.#pollingPausedByVisibilityListener = false;
+        this.#networkCondition = this.#networkConditionStates.syncing;
+        this.#nativeEventBufferOffline = false;
+        this.#nativeEventBufferOnline = false;
+        this.#configured = false;
+        this.#currentpollingInterval = this.#pollingIntervals.unstable;
     }
 
     async #pollingHandler() {
-        const start = Date.now();
+        const start = performance.now();
 
         const restart = () => {
 
-            const timeoutDuration = this.#currentpollingInterval - (Date.now() - start);
+            const timeoutDuration = this.#currentpollingInterval - (performance.now() - start);
 
             if (this.#pollingNetwork) {
                 this.#pollingTimeOutId = setTimeout(() => {
@@ -441,10 +572,12 @@ class Monitor extends EventTarget {
                     clearTimeout(this.#checkMainEndPointTimeOutId);
                     this.#checkMainEndPointTimeOutId = false;
                 }
+
             }, 3500);
 
             await fetch(this.#currentEndPoint.endPoint, {
                 mode: 'no-cors',
+                cache: 'no-store',
                 signal: this.#fetchAbortController.signal
             });
 
@@ -455,19 +588,16 @@ class Monitor extends EventTarget {
                 this.#online = true;
             }
 
-            if (this.#latencyLog.includes(Infinity)) {
-                this.#latencyLog = this.#latencyLog.map(
-                    (value) => (value === Infinity) ? this.#latencyThresholds.degraded : value
-                );
-            }
-
-            this.#latencyLog.unshift(Date.now() - start);
+            this.#latencyLog.unshift(performance.now() - start);
             if (this.#latencyLog.length > 10) this.#latencyLog.pop();
 
+            this.#consecutiveFailures = 0;
             this.#networkConditionCheck();
 
         } catch (error) {
             // Ping failed — record as Infinity and check if we just went offline
+            this.#consecutiveFailures++;
+
             this.#latencyLog.unshift(Infinity);
             if (this.#latencyLog.length > 10) this.#latencyLog.pop();
 
@@ -479,21 +609,52 @@ class Monitor extends EventTarget {
                 this.#online = false;
             }
 
-        } finally { this.#pollingNetwork ? restart() : "" }
+
+        } finally {
+            if (this.#pollingNetwork) restart();
+
+            if (this.#debugStreamEnabled) {
+
+                this.dispatchEvent(new CustomEvent("debug:ping", {
+                    detail: {
+                        endpoint: this.#currentEndPoint.type,
+                        duration: performance.now() - start,
+                        snapshot: this.debug.state()
+                    }
+                }));
+
+            }
+        }
     }
 
     #networkConditionCheck() {
         const avg = this.latency;
+        const isDisconnected = this.#consecutiveFailures >= 2;
 
-        if (avg < this.#latencyThresholds.optimal) { this.#bars = 5; this.#networkCondition = this.#networkConditionStates.optimal; }
-        else if (avg < this.#latencyThresholds.stable) { this.#bars = 4; this.#networkCondition = this.#networkConditionStates.stable; }
-        else if (avg < this.#latencyThresholds.highLatency) { this.#bars = 3; this.#networkCondition = this.#networkConditionStates.highLatency; }
-        else if (avg < this.#latencyThresholds.degraded) { this.#bars = 2; this.#networkCondition = this.#networkConditionStates.degraded; }
-        else if (avg !== Infinity) { this.#bars = 1; this.#networkCondition = this.#networkConditionStates.critical; }
-        else { this.#bars = 0; this.#networkCondition = this.#networkConditionStates.disconnected; }
+        if (isDisconnected) {
+            this.#bars = 0;
+            this.#networkCondition = this.#networkConditionStates.disconnected;
+        } else if (avg < this.#latencyThresholds.optimal) {
+            this.#bars = 5;
+            this.#networkCondition = this.#networkConditionStates.optimal;
+        }
+        else if (avg < this.#latencyThresholds.stable) {
+            this.#bars = 4;
+            this.#networkCondition = this.#networkConditionStates.stable;
+        }
+        else if (avg < this.#latencyThresholds.highLatency) {
+            this.#bars = 3;
+            this.#networkCondition = this.#networkConditionStates.highLatency;
+        }
+        else if (avg < this.#latencyThresholds.degraded) {
+            this.#bars = 2;
+            this.#networkCondition = this.#networkConditionStates.degraded;
+        } else {
+            this.#bars = 1;
+            this.#networkCondition = this.#networkConditionStates.critical;
+        }
 
         if (this.#pollingNetwork) {
-
             this.#stabilityCheck();
 
             this.dispatchEvent(new CustomEvent("ping", {
@@ -503,10 +664,9 @@ class Monitor extends EventTarget {
                     condition: this.#networkCondition,
                     bars: this.#bars,
                     jitter: this.jitter,
-                    reliability: this.reliability,
+                    packetLoss: this.packetLoss,
                 }
             }));
-
         }
     }
 
@@ -515,6 +675,17 @@ class Monitor extends EventTarget {
         if (this.#stabilityLatencyLogLastEntry !== this.#networkCondition.label) {
             this.#stabilityLatencyLog = [];
             this.#currentpollingInterval = this.#pollingIntervals.unstable;
+
+            this.dispatchEvent(new CustomEvent("networkConditionChange", {
+                detail: {
+                    online: this.#online,
+                    latency: this.latency,
+                    condition: this.#networkCondition,
+                    bars: this.#bars,
+                    jitter: this.jitter,
+                    packetLoss: this.packetLoss,
+                }
+            }));
         }
 
         this.#stabilityLatencyLog.unshift(this.#networkCondition.label);
@@ -532,13 +703,54 @@ class Monitor extends EventTarget {
     }
 
     getLatencyAs(format = "ms") {
+        if (typeof format !== "string") {
+            throw new UpLinkError(
+                "'getLatencyAs()' only accepts a string, e.g. 'ms', 's'",
+                "CONFIG_ERR"
+            );
+        }
+
         if (this.latency !== Infinity) {
             switch (format) {
                 case "s": return (this.latency === 0) ? 0 : this.latency / 1000;
-                case "m": return (this.latency === 0) ? 0 : this.latency / 60000;
                 default: return this.latency;
             }
         } else return Infinity;
+    }
+
+    //debug
+
+    #debugReset() {
+        this.#latencyLog = [];
+        this.#stabilityLatencyLog = [];
+        this.#stabilityLatencyLogLastEntry = undefined;
+        this.#consecutiveFailures = 0;
+        this.#bars = 0;
+        this.#online = navigator.onLine;
+        this.#networkCondition = this.#networkConditionStates.syncing;
+    }
+
+    #injectLatency(mockLatency = [2000]) {
+        if (!Array.isArray(mockLatency) || mockLatency.some(v => typeof v !== 'number')) {
+            throw new UpLinkError("'spike()' expects an array of numbers", "DEBUG_ERR");
+        }
+
+        // Reset, but then recount based on the injected mock data
+        this.#consecutiveFailures = 0;
+
+        mockLatency.forEach(latency => {
+            if (latency === Infinity) {
+                this.#consecutiveFailures++;
+            } else {
+                this.#consecutiveFailures = 0;
+            }
+
+            this.#latencyLog.unshift(latency);
+            if (this.#latencyLog.length > 10) this.#latencyLog.pop();
+        });
+
+        this.#networkConditionCheck();
+
     }
 }
 
