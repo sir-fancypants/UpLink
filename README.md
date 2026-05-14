@@ -6,14 +6,13 @@ Unlike `navigator.onLine` and the native `online`/`offline` window events — wh
 
 ---
 
-## What's new in v3.0.0
+## What's new in v3.1.0
 
-- **`packetLoss` replaces `reliability`** — the previous 0–100 composite reliability score has been replaced with a direct `packetLoss` percentage. This is more precise: it counts the ratio of failed pings (`Infinity` samples) to total samples in the rolling window and rounds to the nearest whole number. Zero ambiguity about what the number means.
-- **`networkConditionChange` event** — a new dedicated event that fires only when the derived condition label transitions (e.g. `"Stable"` → `"High Latency"`). Previously you had to diff condition codes yourself inside the `ping` handler. The event detail shape is identical to `ping`.
-- **`destroy()` method** — full teardown: stops polling, removes all window/document event listeners, resets all internal metrics, and resets the `configured` guard so `config()` can be called again after re-importing.
-- **`on` / `off` aliases** — `UpLink.on(event, handler)` and `UpLink.off(event, handler)` are now available as ergonomic aliases for `addEventListener` / `removeEventListener`.
-- **`debug` namespace** — a frozen object of developer utilities: `version()`, `logs()`, `state()`, `endpoints()`, `reset()`, `spike()`, and `stream()`. See the [Debugging](#debugging) section.
-- **Main endpoint recovery interval corrected** — the internal check that polls for main endpoint recovery after a fallback now runs every **60 seconds** (previously documented as 5 minutes — the documentation was wrong).
+- **JSDoc throughout** — every public method, property, getter, and `debug` utility is now fully typed with JSDoc. IDE autocompletion, inline docs, and type checking all work out of the box with no separate type declaration file needed.
+- **`noCors` config option documented** — the `noCors` option is now formally documented in the API reference. Use it when pointing UpLink at a custom endpoint that does not serve CORS headers. Note that enabling `noCors` disables data-usage tracking because the browser delivers an opaque response.
+- **`debug.dataUsage()` added to the debug namespace** — previously accessible only via `debug.state()`, data usage is now directly callable as `UpLink.debug.dataUsage()`.
+- **`debug.state()` includes `dataUsage`** — the state snapshot now includes the full data usage report inline.
+- **Bug fixes** — a stray `console.log` that was leaking data-usage output on every stability check has been removed. The `destroy()` abort-order issue (where the main `AbortController` could be nulled before listeners were removed) has been corrected. The `noCors` + data tracking silent-corruption bug (where opaque responses still incremented usage counters) has been fixed at the call site.
 
 ---
 
@@ -29,6 +28,7 @@ Unlike `navigator.onLine` and the native `online`/`offline` window events — wh
 - 🎯 Event-driven API built on native `EventTarget`
 - ⚙️ Fully configurable thresholds, intervals, and endpoints
 - 🛠 Built-in debug namespace for development and testing
+- 📝 Full JSDoc coverage for IDE autocompletion and inline documentation
 
 ---
 
@@ -140,6 +140,7 @@ Configures UpLink. **Call once, before anything else.**
 | `latencyThresholds` | `Object` | See below | Override ms thresholds for condition classification |
 | `pollingIntervals` | `Object` | See below | Override adaptive polling interval durations in ms |
 | `silenceWarnings` | `boolean` | `false` | Suppress `console.warn` for unusually low thresholds |
+| `noCors` | `boolean` | `false` | Set `mode: "no-cors"` on all fetch calls. Use only with custom endpoints that do not serve CORS headers. **Disables data-usage tracking** — responses are opaque in this mode. |
 
 #### `endPoints`
 
@@ -153,10 +154,10 @@ UpLink.config({
 ```
 
 Defaults:
-- `main`: `https://dns.google/resolve?name=.&type=NS`
-- `backup`: `https://1.1.1.1/cdn-cgi/trace`
+- `main`: `https://dns.google/resolve?name=a&type=A`
+- `backup`: `https://cloudflare-dns.com/cdn-cgi/trace`
 
-Both endpoints must be reachable via a `no-cors` fetch (i.e. they do not need to return CORS headers). If `main` does not respond within 3.5 seconds, UpLink switches to `backup` and begins checking whether `main` has recovered every **60 seconds** in the background. When recovery is confirmed, the main endpoint is restored silently.
+If `main` does not respond within 3.5 seconds, UpLink switches to `backup` and begins checking whether `main` has recovered every **60 seconds** in the background. When recovery is confirmed, the main endpoint is restored silently.
 
 #### `latencyThresholds`
 
@@ -183,9 +184,9 @@ Rules:
 ```js
 UpLink.config({
   pollingIntervals: {
-    unstable:    2000, // condition is changing         (default: 2000ms)
-    stabilising: 5000, // 10 consecutive same readings  (default: 4000ms)
-    stable:      10000 // 20 consecutive same readings  (default: 6000ms)
+    unstable:    2000,  // condition is changing         (default: 2000ms)
+    stabilising: 5000,  // 10 consecutive same readings  (default: 4000ms)
+    stable:      10000  // 20 consecutive same readings  (default: 6000ms)
   }
 });
 ```
@@ -234,8 +235,6 @@ Returns the current average latency converted to the requested unit. Returns `In
 UpLink.getLatencyAs("ms"); // → 142
 UpLink.getLatencyAs("s");  // → 0.142
 ```
-
-Throws a `CONFIG_ERR` if `format` is not a string.
 
 ---
 
@@ -349,13 +348,13 @@ The interval resets to `unstable` whenever the condition label changes. All thre
 
 ## How It Works
 
-**Active polling:** On every cycle, UpLink fetches a lightweight endpoint in `no-cors` mode. The fetch is force-aborted after 3.5 seconds if it doesn't respond. On timeout, the active endpoint toggles between main and backup. When falling back to the backup, a background timer checks every 60 seconds whether the main endpoint has recovered and silently restores it if so.
+**Active polling:** On every cycle, UpLink fetches a lightweight endpoint. The fetch is force-aborted after 3.5 seconds if it doesn't respond. On timeout, the active endpoint toggles between main and backup. When falling back to the backup, a background timer checks every 60 seconds whether the main endpoint has recovered and silently restores it if so.
 
 **Rolling window:** Each ping result (round-trip ms, or `Infinity` on failure) is prepended to a 10-entry rolling log. The window average drives condition classification and bar count, smoothing out individual spikes and preventing rapid condition flickering.
 
 **Disconnected override:** Rather than waiting for a degraded latency average to reach a "bad" threshold, UpLink declares the connection `Disconnected` the moment two consecutive pings fail. This makes sudden hard drops feel immediate.
 
-**Native event hybrid:** UpLink also listens to the browser's native `online` and `offline` window events as early-warning signals — these often fire before the next scheduled poll. When either fires, UpLink immediately restarts its loop to run a confirmation ping. A 2-second debounce buffer on each event (kept separate) prevents flickering from causing repeated restarts while still allowing a genuine rapid offline → online transition to be detected cleanly.
+**Native event hybrid:** UpLink also listens to the browser's native `online` and `offline` window events as early-warning signals — these often fire before the next scheduled poll. When either fires, UpLink immediately restarts its loop to run a confirmation ping. A 2-second debounce buffer on each event prevents flickering from causing repeated restarts while still allowing a genuine rapid offline → online transition to be detected cleanly.
 
 **Tab awareness:** Polling pauses the moment the browser tab becomes hidden and resumes when it becomes visible again. The `visibilitychange`, `offline`, and `online` listeners all share a single `AbortController` and are torn down together whenever polling stops.
 
@@ -370,7 +369,7 @@ UpLink exposes a frozen `debug` namespace intended for development and testing o
 Prints the styled console banner and returns the version string.
 
 ```js
-UpLink.debug.version(); // → "3.0.0"
+UpLink.debug.version(); // → "3.1.0"
 ```
 
 ### `UpLink.debug.logs()`
@@ -383,7 +382,7 @@ UpLink.debug.logs(); // → [45, 67, Infinity, 102, 88, ...]
 
 ### `UpLink.debug.state()`
 
-Returns a full snapshot of internal state at the time of the call.
+Returns a full snapshot of internal state at the time of the call, including a data usage report.
 
 ```js
 const s = UpLink.debug.state();
@@ -397,7 +396,8 @@ const s = UpLink.debug.state();
 //   packetLoss: 0,
 //   endpoint: { endPoint: "https://...", type: "main" },
 //   interval: 4000,
-//   failures: 0
+//   failures: 0,
+//   dataUsage: { usage: { bytes, kb, mb, gb }, stability: 0.98, projections: { ... } }
 // }
 ```
 
@@ -413,6 +413,25 @@ UpLink.debug.endpoints();
 ### `UpLink.debug.reset()`
 
 Clears the latency log, stability log, and all derived metrics without stopping the polling loop. Useful for getting a clean slate during a testing session.
+
+### `UpLink.debug.dataUsage()`
+
+Returns a data usage report based on the response payload sizes observed so far. Useful for estimating the bandwidth cost of running UpLink over time.
+
+```js
+const usage = UpLink.debug.dataUsage();
+// {
+//   usage: { bytes: 14520, kb: 14.18, mb: 0.01, gb: 0 },
+//   stability: 0.97,   // 0 = erratic payload sizes, 1 = perfectly consistent
+//   projections: {
+//     unstable:    { averagePayload: {...}, perMinute: {...}, hourly: {...}, daily: {...} },
+//     stabilising: { ... },
+//     stable:      { ... }
+//   }
+// }
+```
+
+> **Note:** Returns `{ usage: null, stability: 0, projections: null, note: "..." }` when `noCors: true` is set, because opaque responses have no readable body.
 
 ### `UpLink.debug.spike(mockLatency)`
 
@@ -458,7 +477,7 @@ UpLink throws `UpLinkError` for invalid usage. Each error carries a `code` prope
 | Code | Thrown by | Reason |
 |---|---|---|
 | `ALREADY_CONFIGURED` | `config()` | `config()` was called more than once without a `destroy()` in between |
-| `CONFIG_ERR` | `config()`, `getLatencyAs()` | An option value is invalid, out of range, or the wrong type |
+| `CONFIG_ERR` | `config()` | An option value is invalid, out of range, or the wrong type |
 | `DEBUG_ERR` | `debug.spike()` | Argument is not an array of numbers |
 | `GENERAL_ERROR` | Any | Unexpected internal error |
 
@@ -482,15 +501,19 @@ Understanding what UpLink does not do — and cannot do — is as important as k
 
 ### It measures round-trip time to a fixed endpoint, not true network quality
 
-UpLink's latency figure is the time taken to complete (or abort) a `no-cors` fetch to a single remote host. This includes DNS resolution, TCP handshake, TLS negotiation, server processing time, and the return trip. It is not a raw ICMP ping. Two connections with identical actual link quality may read differently depending on which endpoint is used.
+UpLink's latency figure is the time taken to complete (or abort) a fetch to a single remote host. This includes DNS resolution, TCP handshake, TLS negotiation, server processing time, and the return trip. It is not a raw ICMP ping. Two connections with identical actual link quality may read differently depending on which endpoint is used.
 
 ### It cannot distinguish between network problems and endpoint problems
 
 If the configured `main` and `backup` endpoints are both slow or unreliable, UpLink will report poor connectivity even if the user's actual internet connection is fine. Choosing stable, low-latency endpoints that are geographically close to your users matters.
 
+### The default endpoints may be blocked in some regions
+
+The default `main` endpoint (`dns.google`) is blocked in certain regions and corporate environments. If you are deploying to users in those contexts, configure a custom endpoint via `config({ endPoints })`.
+
 ### `no-cors` fetch does not validate response content
 
-UpLink uses `mode: 'no-cors'` to avoid CORS errors on third-party endpoints. In this mode the browser delivers an opaque response — UpLink only knows whether the request completed or timed out, not whether the server returned a 200, 500, or anything else. A server returning errors will still register as a successful ping.
+When `noCors: true` is set, the browser delivers an opaque response — UpLink only knows whether the request completed or timed out, not whether the server returned a 200, 500, or anything else. A server returning errors will still register as a successful ping. Data-usage tracking is also disabled in this mode.
 
 ### The rolling window lags behind sudden changes
 
